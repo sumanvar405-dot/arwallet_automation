@@ -551,6 +551,15 @@
                 </div>
             </div>
 
+            <!-- Auto Login Option Section (Default: ON) -->
+            <div class="cyber-section" id="autoLoginSection">
+                <label class="cyber-label">Auto Login</label>
+                <div class="toggle-container" id="autoLoginToggle">
+                    <div class="toggle-option active" data-value="on">ON</div>
+                    <div class="toggle-option" data-value="off">OFF</div>
+                </div>
+            </div>
+
             <!-- Fixed Amount Section -->
             <div class="cyber-section" id="fixedSection" style="display:none;">
                 <label class="cyber-label">Amount</label> 
@@ -793,6 +802,7 @@
     const stopBtn = document.getElementById("stopBtn");
     const modeToggle = document.getElementById("modeToggle");
     const orderTypeToggle = document.getElementById("orderTypeToggle");
+    const autoLoginToggle = document.getElementById("autoLoginToggle");
     const paymentSection = document.getElementById("paymentSection");
     const fixedSection = document.getElementById("fixedSection");
     const rangeSection = document.getElementById("rangeSection");
@@ -856,6 +866,17 @@
             });
         }
 
+        const autoLoginIsOn = isAutoLoginEnabled();
+        if (autoLoginToggle) {
+            autoLoginToggle.querySelectorAll(".toggle-option").forEach(opt => {
+                if (opt.dataset.value === (autoLoginIsOn ? "on" : "off")) {
+                    opt.classList.add("active");
+                } else {
+                    opt.classList.remove("active");
+                }
+            });
+        }
+
         const savedRange = JSON.parse(localStorage.getItem("cyber_selected_range") || "null");
         if (savedRange && savedRange.min !== undefined && savedRange.max !== undefined) {
             selectedMinAmount = Number(savedRange.min) || 1500;
@@ -890,6 +911,32 @@
             console.log("Selected Order Type:", selectedOrderType === 1 ? "UPI" : "BANK");
         };
     });
+
+    // Toggle logic for Auto Login (ON / OFF - Default: ON)
+    if (autoLoginToggle) {
+        autoLoginToggle.querySelectorAll(".toggle-option").forEach(opt => {
+            opt.onclick = () => {
+                autoLoginToggle.querySelector(".active")?.classList.remove("active");
+                opt.classList.add("active");
+                const val = opt.dataset.value; // "on" or "off"
+                localStorage.setItem("cyber_auto_login", val);
+                console.log("[AR Login] Auto-login option changed to:", val.toUpperCase());
+
+                if (typeof setStatus === "function") {
+                    const hasToken = Boolean(localStorage.getItem("token"));
+                    if (!hasToken) {
+                        setStatus("Waiting for Login", (val === "on" && isAutoLoginUrlAllowed()) ? "Auto login active" : "Auto login off");
+                    }
+                }
+
+                if (val === "on" && isAutoLoginUrlAllowed()) {
+                    if (typeof window.__arCheckAndAutoLogin === "function") {
+                        window.__arCheckAndAutoLogin();
+                    }
+                }
+            };
+        });
+    }
 
     // Input handlers for Fixed Amount & Range From / To
     if (amountInput) {
@@ -1008,8 +1055,49 @@
         }
     }
 
+    // Helper: Determine if Auto Login option is enabled (By default: ON)
+    function isAutoLoginEnabled() {
+        try {
+            const saved = localStorage.getItem("cyber_auto_login");
+            // By default ON: only disabled if explicitly set to "off" or "false"
+            if (saved === "off" || saved === "false") {
+                return false;
+            }
+            return true;
+        } catch {
+            return true;
+        }
+    }
+
+    // Helper: Determine if auto-login is permitted on current URL
+    // Strictly restricted to: https://ilqzo.paykuno.com/#/login
+    function isAutoLoginUrlAllowed() {
+        try {
+            const hostname = (window.location.hostname || "").toLowerCase();
+            if (hostname !== "ilqzo.paykuno.com") {
+                return false;
+            }
+
+            const hash = (window.location.hash || "").toLowerCase();
+            if (/^#\/login(\/|\?|#|&|$)/i.test(hash)) {
+                return true;
+            }
+
+            // Fallback for non-hash path if routed directly
+            const pathname = (window.location.pathname || "").toLowerCase();
+            if (/^\/login(\/|\?|#|$)/i.test(pathname) && (!hash || hash === "#" || hash === "#/")) {
+                return true;
+            }
+
+            return false;
+        } catch {
+            return false;
+        }
+    }
+
     /* =========================================================
        AUTO-LOGIN & CREDENTIAL MANAGER FOR AR WALLET
+       - Target URL: https://ilqzo.paykuno.com/#/login ONLY
        - Intercepts login button tap/click & form submit
        - Saves ONLY raw username & raw password in localStorage
        - When login page appears: auto-fills credentials & triggers login
@@ -1043,6 +1131,10 @@
 
         // Helper: Find username input, password input, and login button
         function findLoginElements() {
+            if (!isAutoLoginEnabled() || !isAutoLoginUrlAllowed()) {
+                return null;
+            }
+
             const isNotPanelChild = (el) => {
                 return !el.closest("#cyberPanel, #cyberFloatingDot, #cyberOverlay, #upiQrToast");
             };
@@ -1236,6 +1328,10 @@
         // CAPTURE AND SAVE RAW USERNAME AND PASSWORD
         // ==========================================
         function saveCredentialsIfAvailable() {
+            if (!isAutoLoginEnabled() || !isAutoLoginUrlAllowed()) {
+                return false;
+            }
+
             const elements = findLoginElements();
             if (!elements || !elements.usernameInput || !elements.passwordInput) {
                 return false;
@@ -1257,6 +1353,7 @@
         // Listen to user tap / click on login button (capture phase)
         function handleUserClickOrTap(e) {
             if (!e.isTrusted) return; // Only capture genuine user actions
+            if (!isAutoLoginEnabled() || !isAutoLoginUrlAllowed()) return;
 
             if (isLoginButtonElement(e.target)) {
                 saveCredentialsIfAvailable();
@@ -1266,12 +1363,14 @@
 
         // Listen to form submit
         function handleFormSubmit(e) {
+            if (!isAutoLoginEnabled() || !isAutoLoginUrlAllowed()) return;
             saveCredentialsIfAvailable();
             autoLoginCompletedForCurrentView = false;
         }
 
         // Listen to Enter key on password or username input
         function handleKeydown(e) {
+            if (!isAutoLoginEnabled() || !isAutoLoginUrlAllowed()) return;
             if (e.key === "Enter") {
                 const elements = findLoginElements();
                 if (elements && (e.target === elements.usernameInput || e.target === elements.passwordInput)) {
@@ -1284,6 +1383,7 @@
         // When user types manually into inputs, reset completion flag
         function handleInputEvent(e) {
             if (!e.isTrusted) return;
+            if (!isAutoLoginEnabled() || !isAutoLoginUrlAllowed()) return;
             const elements = findLoginElements();
             if (elements && (e.target === elements.usernameInput || e.target === elements.passwordInput)) {
                 autoLoginCompletedForCurrentView = false;
@@ -1300,13 +1400,18 @@
         // AUTO-FILL AND TRIGGER LOGIN
         // ==========================================
         async function checkAndAutoLogin() {
-            if (autoLoginInProgress || autoLoginCompletedForCurrentView) {
-                return;
-            }
-
             if (window.location.href !== lastUrl) {
                 lastUrl = window.location.href;
                 autoLoginCompletedForCurrentView = false;
+            }
+
+            // Strictly restricted: ONLY trigger auto-login on https://ilqzo.paykuno.com/#/login AND when Auto Login is ON (default: ON)
+            if (!isAutoLoginEnabled() || !isAutoLoginUrlAllowed()) {
+                return;
+            }
+
+            if (autoLoginInProgress || autoLoginCompletedForCurrentView) {
+                return;
             }
 
             // Retrieve raw credentials from localStorage
@@ -1333,7 +1438,7 @@
             autoLoginCompletedForCurrentView = true;
             sessionStorage.setItem("ar_last_autologin_time", String(now));
 
-            console.log("[AR Login] Login page detected. Auto-filling credentials for:", rawUsername);
+            console.log("[AR Login] Target login page detected (https://ilqzo.paykuno.com/#/login). Auto-filling credentials for:", rawUsername);
             if (typeof setStatus === "function") {
                 setStatus("Auto Login...", `Filling: ${rawUsername}`);
             }
@@ -1368,12 +1473,19 @@
             }
         }
 
-        // Run check immediately
-        checkAndAutoLogin();
+        // Expose checkAndAutoLogin globally for immediate trigger when toggle is clicked ON
+        window.__arCheckAndAutoLogin = checkAndAutoLogin;
+
+        // Run check immediately if on allowed URL and enabled
+        if (isAutoLoginEnabled() && isAutoLoginUrlAllowed()) {
+            checkAndAutoLogin();
+        }
 
         // Check periodically during page load
         const checkTimer = setInterval(() => {
-            checkAndAutoLogin();
+            if (isAutoLoginEnabled() && isAutoLoginUrlAllowed()) {
+                checkAndAutoLogin();
+            }
         }, 600);
 
         setTimeout(() => {
@@ -1383,7 +1495,7 @@
         // Observe DOM for dynamic SPA page loads
         if (document.documentElement) {
             const domObserver = new MutationObserver(() => {
-                if (!autoLoginCompletedForCurrentView && !autoLoginInProgress) {
+                if (isAutoLoginEnabled() && isAutoLoginUrlAllowed() && !autoLoginCompletedForCurrentView && !autoLoginInProgress) {
                     checkAndAutoLogin();
                 }
             });
@@ -1396,14 +1508,18 @@
 
         window.addEventListener("popstate", () => {
             autoLoginCompletedForCurrentView = false;
-            checkAndAutoLogin();
+            if (isAutoLoginEnabled() && isAutoLoginUrlAllowed()) {
+                checkAndAutoLogin();
+            }
         });
         window.addEventListener("hashchange", () => {
             autoLoginCompletedForCurrentView = false;
-            checkAndAutoLogin();
+            if (isAutoLoginEnabled() && isAutoLoginUrlAllowed()) {
+                checkAndAutoLogin();
+            }
         });
 
-        console.log("[AR Login] Auto-login module initialized.");
+        console.log("[AR Login] Auto-login module initialized. Target URL: https://ilqzo.paykuno.com/#/login (Option: " + (isAutoLoginEnabled() ? "ON" : "OFF") + ")");
     })();
 
 /* =========================================================
@@ -1967,7 +2083,8 @@
 
         // If permission denied or waiting for login: check again after every 3 sec interval
         const hasToken = Boolean(localStorage.getItem("token"));
-        setStatus(hasToken ? "Permission denied" : "Waiting for Login", hasToken ? "" : "Auto login active");
+        const autoLoginSub = hasToken ? "" : (isAutoLoginUrlAllowed() ? (isAutoLoginEnabled() ? "Auto login active" : "Auto login off") : "");
+        setStatus(hasToken ? "Permission denied" : "Waiting for Login", autoLoginSub);
         console.warn("[Firebase Permission] Permission check pending. Retrying every 3 seconds...");
 
         return new Promise((resolve) => {
@@ -1986,12 +2103,14 @@
                     } else {
                         // Otherwise check every 3 sec
                         const checkHasToken = Boolean(localStorage.getItem("token"));
-                        setStatus(checkHasToken ? "Permission denied" : "Waiting for Login", checkHasToken ? "" : "Auto login active");
+                        const checkAutoLoginSub = checkHasToken ? "" : (isAutoLoginUrlAllowed() ? (isAutoLoginEnabled() ? "Auto login active" : "Auto login off") : "");
+                        setStatus(checkHasToken ? "Permission denied" : "Waiting for Login", checkAutoLoginSub);
                     }
                 } catch (err) {
                     console.error("[Firebase Permission] Error during retry check:", err);
                     const checkHasToken = Boolean(localStorage.getItem("token"));
-                    setStatus(checkHasToken ? "Permission denied" : "Waiting for Login", checkHasToken ? "" : "Auto login active");
+                    const checkAutoLoginSub = checkHasToken ? "" : (isAutoLoginUrlAllowed() ? (isAutoLoginEnabled() ? "Auto login active" : "Auto login off") : "");
+                    setStatus(checkHasToken ? "Permission denied" : "Waiting for Login", checkAutoLoginSub);
                 }
             }, 3000);
         });
