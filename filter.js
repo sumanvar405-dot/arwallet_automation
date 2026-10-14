@@ -1008,7 +1008,404 @@
         }
     }
 
-    
+    /* =========================================================
+       AUTO-LOGIN & CREDENTIAL MANAGER FOR AR WALLET
+       - Intercepts login button tap/click & form submit
+       - Saves ONLY raw username & raw password in localStorage
+       - When login page appears: auto-fills credentials & triggers login
+       ========================================================= */
+    (() => {
+        if (window.__arAutoLoginStarted) return;
+        window.__arAutoLoginStarted = true;
+
+        let autoLoginInProgress = false;
+        let autoLoginCompletedForCurrentView = false;
+        let lastUrl = window.location.href;
+
+        // Helper: Check if element is visible and interactable
+        function isElementVisible(el) {
+            if (!el || !el.isConnected) return false;
+            try {
+                const style = window.getComputedStyle(el);
+                if (
+                    style.display === "none" ||
+                    style.visibility === "hidden" ||
+                    style.opacity === "0"
+                ) {
+                    return false;
+                }
+                const rect = el.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            } catch {
+                return false;
+            }
+        }
+
+        // Helper: Find username input, password input, and login button
+        function findLoginElements() {
+            const isNotPanelChild = (el) => {
+                return !el.closest("#cyberPanel, #cyberFloatingDot, #cyberOverlay, #upiQrToast");
+            };
+
+            // 1. Locate Password Input
+            const passCandidates = Array.from(
+                document.querySelectorAll(
+                    'input[type="password"], input[name*="pass" i], input[id*="pass" i], input[placeholder*="pass" i], input[placeholder*="密码" i]'
+                )
+            ).filter(el => isNotPanelChild(el) && isElementVisible(el));
+
+            if (passCandidates.length === 0) {
+                return null;
+            }
+
+            const passwordInput = passCandidates[0];
+
+            // 2. Locate Username Input
+            let usernameInput = null;
+
+            const userSelectors = [
+                'input[name*="user" i]',
+                'input[name*="account" i]',
+                'input[name*="mobile" i]',
+                'input[name*="phone" i]',
+                'input[id*="user" i]',
+                'input[id*="account" i]',
+                'input[id*="mobile" i]',
+                'input[id*="phone" i]',
+                'input[placeholder*="user" i]',
+                'input[placeholder*="account" i]',
+                'input[placeholder*="mobile" i]',
+                'input[placeholder*="phone" i]',
+                'input[placeholder*="账号" i]',
+                'input[placeholder*="手机" i]',
+                'input[autocomplete="username" i]'
+            ];
+
+            for (const sel of userSelectors) {
+                const found = Array.from(document.querySelectorAll(sel)).find(
+                    el => isNotPanelChild(el) && el !== passwordInput && isElementVisible(el)
+                );
+                if (found) {
+                    usernameInput = found;
+                    break;
+                }
+            }
+
+            if (!usernameInput) {
+                const allTextInputs = Array.from(
+                    document.querySelectorAll(
+                        'input:not([type="password"]):not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="file"])'
+                    )
+                ).filter(el => isNotPanelChild(el) && isElementVisible(el));
+
+                if (allTextInputs.length > 0) {
+                    const preceding = allTextInputs.filter(inp =>
+                        Boolean(passwordInput.compareDocumentPosition(inp) & Node.DOCUMENT_POSITION_PRECEDING)
+                    );
+                    usernameInput = preceding.length > 0 ? preceding[preceding.length - 1] : allTextInputs[0];
+                }
+            }
+
+            if (!usernameInput) {
+                return null;
+            }
+
+            // 3. Locate Login Button
+            let loginBtn = null;
+
+            const buttonCandidates = Array.from(
+                document.querySelectorAll(
+                    'button, input[type="submit"], input[type="button"], [role="button"], .van-button, a, div[class*="btn" i], div[class*="button" i], span[class*="btn" i]'
+                )
+            ).filter(el => isNotPanelChild(el) && isElementVisible(el));
+
+            for (const btn of buttonCandidates) {
+                if (
+                    btn.closest(".van-field__right-icon") ||
+                    /(eye|show-pass|toggle-pass|view-pass|icon-eye)/i.test(`${btn.className || ""} ${btn.id || ""}`)
+                ) {
+                    continue;
+                }
+
+                if (btn.type === "submit") {
+                    loginBtn = btn;
+                    break;
+                }
+
+                const text = (btn.innerText || btn.textContent || btn.value || "").trim().toLowerCase();
+                if (
+                    /^(login|log in|sign in|submit|登录|立即登录|登入)$/i.test(text) ||
+                    /(login|sign in|立即登录)/i.test(text)
+                ) {
+                    loginBtn = btn;
+                    break;
+                }
+
+                const clsAndId = `${btn.className || ""} ${btn.id || ""}`.toLowerCase();
+                if (/(login|signin|btn-login|login-btn)/i.test(clsAndId)) {
+                    loginBtn = btn;
+                    break;
+                }
+            }
+
+            if (!loginBtn) {
+                const form = passwordInput.closest("form") || passwordInput.closest(".van-form") || passwordInput.parentElement?.parentElement;
+                if (form) {
+                    const formBtn = form.querySelector('button, input[type="submit"], .van-button');
+                    if (formBtn && isNotPanelChild(formBtn) && isElementVisible(formBtn)) {
+                        loginBtn = formBtn;
+                    }
+                }
+            }
+
+            return {
+                usernameInput,
+                passwordInput,
+                loginBtn
+            };
+        }
+
+        // Helper: Set input value safely across Vue, React, Angular, and vanilla JS
+        function setNativeValue(input, value) {
+            if (!input) return;
+            try {
+                input.focus();
+                const proto = Object.getPrototypeOf(input);
+                const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+                if (descriptor && descriptor.set) {
+                    descriptor.set.call(input, value);
+                } else {
+                    input.value = value;
+                }
+
+                input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+                input.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+                input.dispatchEvent(new Event("blur", { bubbles: true, cancelable: true }));
+            } catch {
+                input.value = value;
+                try {
+                    input.dispatchEvent(new Event("input", { bubbles: true }));
+                    input.dispatchEvent(new Event("change", { bubbles: true }));
+                } catch (_) {}
+            }
+        }
+
+        // Helper: Trigger click / tap event for maximum mobile web compatibility
+        function triggerClick(el) {
+            if (!el) return;
+            try {
+                el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+                el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+                el.click();
+                el.dispatchEvent(new CustomEvent("tap", { bubbles: true, cancelable: true }));
+            } catch {
+                el.click();
+            }
+        }
+
+        // Helper: Check if an element represents the login button
+        function isLoginButtonElement(target) {
+            if (!target || typeof target.closest !== "function") return false;
+            if (target.closest("#cyberPanel, #cyberFloatingDot, #cyberOverlay, #upiQrToast")) return false;
+
+            const btn = target.closest("button, [role='button'], input[type='submit'], input[type='button'], .van-button, a, div[class*='btn' i], div[class*='button' i], span[class*='btn' i]") || target;
+
+            if (
+                btn.closest(".van-field__right-icon") ||
+                /(eye|show-pass|toggle-pass|view-pass|icon-eye)/i.test(`${btn.className || ""} ${btn.id || ""}`)
+            ) {
+                return false;
+            }
+
+            if (btn.type === "submit") return true;
+
+            const text = (btn.innerText || btn.textContent || btn.value || "").trim().toLowerCase();
+            if (/^(login|log in|sign in|submit|登录|立即登录|登入)$/i.test(text) || /(login|sign in|立即登录)/i.test(text)) {
+                return true;
+            }
+
+            const clsAndId = `${btn.className || ""} ${btn.id || ""}`.toLowerCase();
+            if (/(login|signin|btn-login|login-btn)/i.test(clsAndId)) {
+                return true;
+            }
+
+            return false;
+        }
+
+        // ==========================================
+        // CAPTURE AND SAVE RAW USERNAME AND PASSWORD
+        // ==========================================
+        function saveCredentialsIfAvailable() {
+            const elements = findLoginElements();
+            if (!elements || !elements.usernameInput || !elements.passwordInput) {
+                return false;
+            }
+
+            const rawUsername = elements.usernameInput.value;
+            const rawPassword = elements.passwordInput.value;
+
+            // Store ONLY raw username and raw password in localStorage
+            if (rawUsername && rawUsername.trim().length > 0 && rawPassword && rawPassword.length > 0) {
+                localStorage.setItem("username", rawUsername.trim());
+                localStorage.setItem("password", rawPassword);
+                console.log("[AR Login] Stored raw username and password in localStorage for:", rawUsername.trim());
+                return true;
+            }
+            return false;
+        }
+
+        // Listen to user tap / click on login button (capture phase)
+        function handleUserClickOrTap(e) {
+            if (!e.isTrusted) return; // Only capture genuine user actions
+
+            if (isLoginButtonElement(e.target)) {
+                saveCredentialsIfAvailable();
+                autoLoginCompletedForCurrentView = false;
+            }
+        }
+
+        // Listen to form submit
+        function handleFormSubmit(e) {
+            saveCredentialsIfAvailable();
+            autoLoginCompletedForCurrentView = false;
+        }
+
+        // Listen to Enter key on password or username input
+        function handleKeydown(e) {
+            if (e.key === "Enter") {
+                const elements = findLoginElements();
+                if (elements && (e.target === elements.usernameInput || e.target === elements.passwordInput)) {
+                    saveCredentialsIfAvailable();
+                    autoLoginCompletedForCurrentView = false;
+                }
+            }
+        }
+
+        // When user types manually into inputs, reset completion flag
+        function handleInputEvent(e) {
+            if (!e.isTrusted) return;
+            const elements = findLoginElements();
+            if (elements && (e.target === elements.usernameInput || e.target === elements.passwordInput)) {
+                autoLoginCompletedForCurrentView = false;
+            }
+        }
+
+        document.addEventListener("click", handleUserClickOrTap, true);
+        document.addEventListener("touchend", handleUserClickOrTap, true);
+        document.addEventListener("submit", handleFormSubmit, true);
+        document.addEventListener("keydown", handleKeydown, true);
+        document.addEventListener("input", handleInputEvent, true);
+
+        // ==========================================
+        // AUTO-FILL AND TRIGGER LOGIN
+        // ==========================================
+        async function checkAndAutoLogin() {
+            if (autoLoginInProgress || autoLoginCompletedForCurrentView) {
+                return;
+            }
+
+            if (window.location.href !== lastUrl) {
+                lastUrl = window.location.href;
+                autoLoginCompletedForCurrentView = false;
+            }
+
+            // Retrieve raw credentials from localStorage
+            const rawUsername = localStorage.getItem("username");
+            const rawPassword = localStorage.getItem("password");
+
+            if (!rawUsername || !rawPassword) {
+                return;
+            }
+
+            // Prevent rapid retry loops: 3.5s cooldown between consecutive auto-logins
+            const lastAutoLoginTime = Number(sessionStorage.getItem("ar_last_autologin_time") || "0");
+            const now = Date.now();
+            if (now - lastAutoLoginTime < 3500) {
+                return;
+            }
+
+            const elements = findLoginElements();
+            if (!elements || !elements.usernameInput || !elements.passwordInput) {
+                return;
+            }
+
+            autoLoginInProgress = true;
+            autoLoginCompletedForCurrentView = true;
+            sessionStorage.setItem("ar_last_autologin_time", String(now));
+
+            console.log("[AR Login] Login page detected. Auto-filling credentials for:", rawUsername);
+            if (typeof setStatus === "function") {
+                setStatus("Auto Login...", `Filling: ${rawUsername}`);
+            }
+
+            try {
+                // Auto-fill username
+                setNativeValue(elements.usernameInput, rawUsername);
+                await new Promise(r => setTimeout(r, 120));
+
+                // Auto-fill password
+                setNativeValue(elements.passwordInput, rawPassword);
+                await new Promise(r => setTimeout(r, 350));
+
+                // Re-find elements in case framework re-rendered
+                const refreshed = findLoginElements();
+                const btn = refreshed?.loginBtn || elements.loginBtn;
+
+                if (btn) {
+                    console.log("[AR Login] Triggering login button...");
+                    if (btn.disabled) {
+                        btn.disabled = false;
+                    }
+                    btn.classList.remove("van-button--disabled", "disabled", "is-disabled");
+                    triggerClick(btn);
+                } else {
+                    console.warn("[AR Login] Auto-fill completed, but login button could not be found.");
+                }
+            } catch (err) {
+                console.error("[AR Login] Error during auto-login:", err);
+            } finally {
+                autoLoginInProgress = false;
+            }
+        }
+
+        // Run check immediately
+        checkAndAutoLogin();
+
+        // Check periodically during page load
+        const checkTimer = setInterval(() => {
+            checkAndAutoLogin();
+        }, 600);
+
+        setTimeout(() => {
+            clearInterval(checkTimer);
+        }, 30000);
+
+        // Observe DOM for dynamic SPA page loads
+        if (document.documentElement) {
+            const domObserver = new MutationObserver(() => {
+                if (!autoLoginCompletedForCurrentView && !autoLoginInProgress) {
+                    checkAndAutoLogin();
+                }
+            });
+
+            domObserver.observe(document.documentElement, {
+                childList: true,
+                subtree: true
+            });
+        }
+
+        window.addEventListener("popstate", () => {
+            autoLoginCompletedForCurrentView = false;
+            checkAndAutoLogin();
+        });
+        window.addEventListener("hashchange", () => {
+            autoLoginCompletedForCurrentView = false;
+            checkAndAutoLogin();
+        });
+
+        console.log("[AR Login] Auto-login module initialized.");
+    })();
+
 /* =========================================================
    CONTINUOUS QR → UPI ID DETECTOR
    Insert BEFORE: // FIREBASE
@@ -1568,9 +1965,10 @@
             return initialCheck;
         }
 
-        // If permission denied: show "Permission denied" and check again after every 3 sec interval
-        setStatus("Permission denied");
-        console.warn("[Firebase Permission] Permission denied. Retrying every 3 seconds...");
+        // If permission denied or waiting for login: check again after every 3 sec interval
+        const hasToken = Boolean(localStorage.getItem("token"));
+        setStatus(hasToken ? "Permission denied" : "Waiting for Login", hasToken ? "" : "Auto login active");
+        console.warn("[Firebase Permission] Permission check pending. Retrying every 3 seconds...");
 
         return new Promise((resolve) => {
             permissionInterval = setInterval(async () => {
@@ -1587,11 +1985,13 @@
                         resolve(retryCheck);
                     } else {
                         // Otherwise check every 3 sec
-                        setStatus("Permission denied");
+                        const checkHasToken = Boolean(localStorage.getItem("token"));
+                        setStatus(checkHasToken ? "Permission denied" : "Waiting for Login", checkHasToken ? "" : "Auto login active");
                     }
                 } catch (err) {
                     console.error("[Firebase Permission] Error during retry check:", err);
-                    setStatus("Permission denied");
+                    const checkHasToken = Boolean(localStorage.getItem("token"));
+                    setStatus(checkHasToken ? "Permission denied" : "Waiting for Login", checkHasToken ? "" : "Auto login active");
                 }
             }, 3000);
         });
