@@ -526,14 +526,14 @@
         <div class="cyber-header"> 
             <div class="cyber-header-title">
                 <span class="cyber-header-dot"></span>
-                <span>Auto Buy</span>
+                <span id="cyberHeaderTitleText">Auto Buy</span>
             </div>
             <button id="cyberMinBtn" class="cyber-min-btn" title="Minimize to dot">−</button>
         </div> 
     
         <div class="cyber-body"> 
             
-            <div class="cyber-section">
+            <div class="cyber-section" id="modeSection">
                 <label class="cyber-label">Search Mode</label>
                 <div class="toggle-container" id="modeToggle">
                     <div class="toggle-option active" data-mode="range">Range</div>
@@ -604,7 +604,7 @@
                 </div>
             </div>
     
-            <div class="cyber-buttons"> 
+            <div class="cyber-buttons" id="actionButtonsSection"> 
                 <button 
                     id="startBtn" 
                     class="cyber-btn start-btn" 
@@ -634,6 +634,9 @@
     const minBtn = document.getElementById("cyberMinBtn");
 
     function showPanel() {
+        if (typeof updateUIVisibility === "function") {
+            updateUIVisibility();
+        }
         panel.style.display = "block";
         floatingDot.style.display = "none";
         localStorage.setItem("cyber_panel_visible", "true");
@@ -803,9 +806,13 @@
     const modeToggle = document.getElementById("modeToggle");
     const orderTypeToggle = document.getElementById("orderTypeToggle");
     const autoLoginToggle = document.getElementById("autoLoginToggle");
+    const modeSection = document.getElementById("modeSection");
     const paymentSection = document.getElementById("paymentSection");
+    const autoLoginSection = document.getElementById("autoLoginSection");
     const fixedSection = document.getElementById("fixedSection");
     const rangeSection = document.getElementById("rangeSection");
+    const actionButtonsSection = document.getElementById("actionButtonsSection");
+    const headerTitleText = document.getElementById("cyberHeaderTitleText");
     const amountInput = document.getElementById("buyAmount");
     const rangeFromInput = document.getElementById("rangeFromAmount");
     const rangeToInput = document.getElementById("rangeToAmount");
@@ -819,27 +826,66 @@
 
     function applyModeUI(mode) {
         selectedMode = mode;
-        if (mode === "fixed") {
-            fixedSection.style.display = "block";
-            rangeSection.style.display = "none";
-            if (paymentSection) paymentSection.style.display = "block";
-        } else if (mode === "mixed") {
-            fixedSection.style.display = "none";
-            rangeSection.style.display = "block";
+        if (isAutoLoginUrlAllowed()) {
+            if (fixedSection) fixedSection.style.display = "none";
+            if (rangeSection) rangeSection.style.display = "none";
             if (paymentSection) paymentSection.style.display = "none";
         } else {
-            // "range" mode
-            fixedSection.style.display = "none";
-            rangeSection.style.display = "block";
-            if (paymentSection) paymentSection.style.display = "block";
-        }
-        modeToggle.querySelectorAll(".toggle-option").forEach(opt => {
-            if (opt.dataset.mode === mode) {
-                opt.classList.add("active");
+            if (mode === "fixed") {
+                if (fixedSection) fixedSection.style.display = "block";
+                if (rangeSection) rangeSection.style.display = "none";
+                if (paymentSection) paymentSection.style.display = "block";
+            } else if (mode === "mixed") {
+                if (fixedSection) fixedSection.style.display = "none";
+                if (rangeSection) rangeSection.style.display = "block";
+                if (paymentSection) paymentSection.style.display = "none";
             } else {
-                opt.classList.remove("active");
+                // "range" mode
+                if (fixedSection) fixedSection.style.display = "none";
+                if (rangeSection) rangeSection.style.display = "block";
+                if (paymentSection) paymentSection.style.display = "block";
             }
-        });
+        }
+        if (modeToggle) {
+            modeToggle.querySelectorAll(".toggle-option").forEach(opt => {
+                if (opt.dataset.mode === mode) {
+                    opt.classList.add("active");
+                } else {
+                    opt.classList.remove("active");
+                }
+            });
+        }
+    }
+
+    // Toggle visibility based on page:
+    // On Login Page: ONLY Auto Login ON/OFF is visible; other buttons/sections are hidden
+    // On Other Pages: Auto Login is hidden; Search Mode, Payment, Amounts, and Start/Stop buttons are visible
+    function updateUIVisibility() {
+        const onLoginPage = isAutoLoginUrlAllowed();
+
+        if (onLoginPage) {
+            // Login Page: show ONLY auto login toggle, hide all other control buttons/sections
+            if (autoLoginSection) autoLoginSection.style.display = "block";
+            if (modeSection) modeSection.style.display = "none";
+            if (paymentSection) paymentSection.style.display = "none";
+            if (fixedSection) fixedSection.style.display = "none";
+            if (rangeSection) rangeSection.style.display = "none";
+            if (actionButtonsSection) actionButtonsSection.style.display = "none";
+
+            if (headerTitleText) headerTitleText.innerText = "Auto Login";
+            if (floatingDot) floatingDot.title = "Drag to move | Click to open Auto Login";
+        } else {
+            // Other Pages: hide auto login toggle, show buy controls & action buttons
+            if (autoLoginSection) autoLoginSection.style.display = "none";
+            if (modeSection) modeSection.style.display = "block";
+            if (actionButtonsSection) actionButtonsSection.style.display = "flex";
+
+            // Restore mode specific UI
+            applyModeUI(selectedMode);
+
+            if (headerTitleText) headerTitleText.innerText = "Auto Buy";
+            if (floatingDot) floatingDot.title = "Drag to move | Click to open Auto Buy";
+        }
     }
 
     // Restore saved selections
@@ -890,6 +936,9 @@
     } catch (e) {
         console.log("Error restoring settings:", e);
     }
+
+    // Apply initial page-specific UI visibility
+    updateUIVisibility();
 
     // Toggle logic for Search Mode
     modeToggle.querySelectorAll(".toggle-option").forEach(opt => {
@@ -1074,18 +1123,18 @@
     function isAutoLoginUrlAllowed() {
         try {
             const hostname = (window.location.hostname || "").toLowerCase();
-            if (hostname !== "ilqzo.paykuno.com") {
+            if (hostname && hostname !== "ilqzo.paykuno.com" && !hostname.endsWith(".paykuno.com") && hostname !== "localhost") {
                 return false;
             }
 
             const hash = (window.location.hash || "").toLowerCase();
-            if (/^#\/login(\/|\?|#|&|$)/i.test(hash)) {
+            if (/^#\/login(\/|\?|#|&|$)/i.test(hash) || /^#login(\/|\?|#|&|$)/i.test(hash) || hash.includes("login")) {
                 return true;
             }
 
             // Fallback for non-hash path if routed directly
             const pathname = (window.location.pathname || "").toLowerCase();
-            if (/^\/login(\/|\?|#|$)/i.test(pathname) && (!hash || hash === "#" || hash === "#/")) {
+            if (/^\/login(\/|\?|#|$)/i.test(pathname) && (!hash || hash === "#" || hash === "#/" || hash.includes("login"))) {
                 return true;
             }
 
@@ -1093,6 +1142,50 @@
         } catch {
             return false;
         }
+    }
+
+    // SPA navigation listeners to ensure UI updates dynamically whenever page/route changes
+    window.addEventListener("popstate", () => {
+        try { updateUIVisibility(); } catch {}
+    });
+    window.addEventListener("hashchange", () => {
+        try { updateUIVisibility(); } catch {}
+    });
+
+    const _origPushState = history.pushState;
+    if (_origPushState) {
+        history.pushState = function (...args) {
+            const res = _origPushState.apply(this, args);
+            try { updateUIVisibility(); } catch {}
+            return res;
+        };
+    }
+
+    const _origReplaceState = history.replaceState;
+    if (_origReplaceState) {
+        history.replaceState = function (...args) {
+            const res = _origReplaceState.apply(this, args);
+            try { updateUIVisibility(); } catch {}
+            return res;
+        };
+    }
+
+    let _lastNavUrl = window.location.href;
+    setInterval(() => {
+        if (window.location.href !== _lastNavUrl) {
+            _lastNavUrl = window.location.href;
+            try { updateUIVisibility(); } catch {}
+        }
+    }, 300);
+
+    if (document.documentElement) {
+        const _navObserver = new MutationObserver(() => {
+            if (window.location.href !== _lastNavUrl) {
+                _lastNavUrl = window.location.href;
+                try { updateUIVisibility(); } catch {}
+            }
+        });
+        _navObserver.observe(document.documentElement, { childList: true, subtree: true });
     }
 
     /* =========================================================
